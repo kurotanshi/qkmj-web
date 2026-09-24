@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang='zh-Hant'>
+  <head>
+    <meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1'>
+    <meta name='description' content='QKMJ 四人本機麻將'>
+    <meta http-equiv='Content-Security-Policy' content="default-src 'self'; script-src 'self'; style-src 'self'; worker-src 'self'; connect-src 'none'; img-src 'self' data:">
+    <title>QKMJ 麻將</title>
+    <link rel='stylesheet' href='./styles.css'>
+  </head>
+  <body>
+    <main id='app'>
+      <div class='terminal-window'>
+        <header class='terminal-header'>
+          <span>QKMJ 麻將</span>
+          <button id='restart-top' class='terminal-button header-button' type='button'>重新開始</button>
+        </header>
+
+        <section id='setup' class='setup-screen' aria-labelledby='setup-title'>
+          <div class='setup-heading'>
+            <p class='terminal-brand'>QKMJ 麻將</p>
+            <h1 id='setup-title'>選擇三位電腦的難度</h1>
+            <p id='setup-hint' class='setup-hint'>每局開始前可調整；牌局開始後鎖定。</p>
+          </div>
+          <div class='setup-grid'>
+            <label>南位
+              <select id='difficulty-1' aria-label='南位電腦難度'>
+                <option value='weak'>弱</option>
+                <option value='medium' selected>中</option>
+                <option value='strong'>強</option>
+              </select>
+            </label>
+            <label>西位
+              <select id='difficulty-2' aria-label='西位電腦難度'>
+                <option value='weak'>弱</option>
+                <option value='medium' selected>中</option>
+                <option value='strong'>強</option>
+              </select>
+            </label>
+            <label>北位
+              <select id='difficulty-3' aria-label='北位電腦難度'>
+                <option value='weak'>弱</option>
+                <option value='medium' selected>中</option>
+                <option value='strong'>強</option>
+              </select>
+            </label>
+          </div>
+          <div class='setup-actions'>
+            <button id='start' class='terminal-button inverse-on-hover' type='button'>[ 開始牌局 ]</button>
+            <span class='setup-keys'>A–Q 出牌　0 無　Space 摸牌</span>
+          </div>
+          <details class='help'>
+            <summary>規則與重現提示</summary>
+            <p>QKMJ legacy profile：144 張牌、花牌補牌、吃碰槓胡，牌山保留十六張流局；無搶槓或特殊花牌胡。每局開始前可調整三位電腦難度。</p>
+            <p>一般牌山為隨機；網址加上 <code>?seed=1</code> 到 <code>?seed=4294967295</code> 可重現牌山。</p>
+          </details>
+          <p id='setup-error' class='error' role='alert' hidden></p>
+        </section>
+
+        <section id='game' hidden aria-label='QKMJ 麻將牌局'>
+          <div class='game-grid'>
+            <section id='table' class='playfield' aria-label='QKMJ 麻將桌'>
+              <div id='seat-north' class='seat seat-north'></div>
+              <div id='seat-west' class='seat seat-west'></div>
+              <div id='center' class='table-center'></div>
+              <div id='seat-east' class='seat seat-east'></div>
+              <div id='seat-south' class='seat seat-south'>
+                <div id='human-seat-head'></div>
+                <div class='human-meta'>
+                  <span id='human-count'></span>
+                  <span id='human-flowers' aria-label='你的花牌'></span>
+                </div>
+                <div id='human-melds' class='melds human-melds' aria-label='你的副露'></div>
+                <div id='human-hand' class='human-hand' aria-label='你的手牌'></div>
+              </div>
+            </section>
+
+            <aside id='info-panel' class='info-panel' aria-label='牌局資訊與合法動作'>
+              <div class='info-topline'>
+                <span id='round-label'>東局</span>
+                <span id='wall-count'>牌山</span>
+              </div>
+              <div id='round-info' class='round-info'></div>
+              <div id='scores' class='scores' aria-label='四家分數'></div>
+              <div id='action-area' class='action-area'>
+                <p class='action-title'>動作</p>
+                <div id='action-tray' class='action-tray' aria-label='合法動作'></div>
+              </div>
+            </aside>
+
+            <section id='messages' class='messages' aria-label='最近狀態訊息'>
+              <p id='status' class='status' role='status' aria-live='polite'>準備中</p>
+              <div id='message-log' class='message-log'></div>
+              <div id='result-panel' class='result-panel' hidden></div>
+            </section>
+
+            <aside id='compass-panel' class='compass-panel' aria-label='座位方向'>
+              <div id='compass' class='compass'>
+                <span id='compass-seat-west'></span>
+                <span id='compass-seat-south'></span>
+                <span id='compass-seat-east'></span>
+                <span id='compass-seat-north'></span>
+              </div>
+            </aside>
+          </div>
+        </section>
+      </div>
+    </main>
+    <script type='module' src='./app.js'></script>
+  </body>
+</html>

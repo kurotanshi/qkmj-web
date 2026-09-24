@@ -1,0 +1,11 @@
+**/*.o
+**/*.exe
+qkmjclient/qkmj
+qkmjserver/mjgps
+qkmjserver/mjrec
+.claude/
+.codex/
+.worktrees/
+/browser/target/
+/browser/.tools/
+/browser/web/pkg/
