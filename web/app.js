@@ -29,6 +29,7 @@ let lastLoggedRevision = null;
 let resultRevision = null;
 let logLines = [];
 let onlineNotice = "";
+let onlineTerminalError = false;
 
 function tileLabel(tile) {
   if (tileNames.has(tile)) return tileNames.get(tile);
@@ -871,6 +872,7 @@ function renderLobby() {
 
 function applyOnlineState(nextState) {
   clearOnlineNotice();
+  onlineTerminalError = false;
   onlineAdmitted = true;
   state = { ...nextState, online: true, private: nextState.private || null };
   pendingAction = false;
@@ -890,6 +892,7 @@ function connectOnline(command) {
   closeOnline(false);
   explicitExit = false;
   onlineAdmitted = false;
+  onlineTerminalError = false;
   if (state?.public) render();
   const epoch = ++socketEpoch;
   socket = new WebSocket(websocketUrl());
@@ -919,6 +922,7 @@ function connectOnline(command) {
     }
     if (message.type === "error") {
       pendingAction = false;
+      onlineTerminalError = ["ROOM_FULL", "ROOM_STARTED"].includes(message.code);
       if (message.state) applyOnlineState(message.state);
       if (["ROOM_NOT_FOUND", "INVALID_TOKEN"].includes(message.code)) {
         closeOnline(true);
@@ -948,7 +952,9 @@ function connectOnline(command) {
     if (explicitExit) return;
     const saved = savedOnlineSession();
     if (!saved || reconnectAttempts >= 6) {
-      showOnlineError(saved ? "重連次數已達上限，請重新加入房間" : "房間已結束，請重新加入");
+      if (saved || !onlineTerminalError) {
+        showOnlineError(saved ? "重連次數已達上限，請重新加入房間" : "房間已結束，請重新加入");
+      }
       if (state?.public) render();
       renderLobby();
       return;
@@ -973,18 +979,19 @@ function connectOnline(command) {
 function closeOnline(explicit) {
   if (reconnectTimer) window.clearTimeout(reconnectTimer);
   reconnectTimer = 0;
+  const wasAdmitted = onlineAdmitted;
+  if (explicit && wasAdmitted && state?.room && !state.room.started && socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "leave" }));
+  }
   socketEpoch += 1;
   onlineAdmitted = false;
-  if (socket) {
-    if (explicit && onlineAdmitted && state?.room && !state.room.started && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: "leave" }));
-    }
-    socket.close();
-    socket = null;
-  }
   if (explicit) {
     explicitExit = true;
     clearOnlineSession();
+  }
+  if (socket) {
+    socket.close();
+    socket = null;
   }
 }
 
