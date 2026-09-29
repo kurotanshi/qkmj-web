@@ -114,6 +114,7 @@ function client(port) {
     socket,
     opened,
     closed,
+    messages,
     get lastState() { return lastState; },
     get pendingAction() { return pendingAction; },
     get lastActionAt() { return lastActionAt; },
@@ -254,6 +255,55 @@ test("four clients exercise ownership, AI takeover, privacy, reconnect, result, 
   for (const item of active.concat(resumed)) item.send({ type: "ready", ready: true });
   await waitUntil(() => resumed.lastState?.public?.result === null && resumed.lastState?.controller, 10000);
   assert.ok(resumed.lastState.private);
+});
+
+test("host starts with AI and late joiners take control only on the next hand", async (t) => {
+  const server = await startServer(t);
+  const clients = [];
+  t.after(() => clients.forEach((item) => item.close()));
+  const host = client(server.port);
+  clients.push(host);
+  await host.opened;
+  host.send({ type: "create", name: "Host" });
+  const created = await host.next((message) => message.type === "created");
+  assert.equal(created.state.room.host_seat, 0);
+  host.send({ type: "start" });
+  await waitUntil(() => host.lastState?.room.started);
+  assert.equal(host.lastState.room.seats.filter((seat) => seat.ai).length, 3);
+
+  const late = client(server.port);
+  clients.push(late);
+  await late.opened;
+  late.send({ type: "join", room_code: created.room_code, name: "Late" });
+  const joined = await late.next((message) => message.type === "joined");
+  assert.equal(joined.seat, 1);
+  assert.equal(joined.state.controller, false);
+  assert.equal(joined.state.private, undefined);
+  assert.equal(joined.state.room.seats[1].watching, true);
+  late.send({ type: "action", revision: joined.state.public.revision, kind: { type: "draw" } });
+  assert.equal((await late.next((message) => message.type === "error")).code, "WATCH_ONLY");
+
+  const driver = setInterval(() => sendNextAction(host), 25);
+  t.after(() => clearInterval(driver));
+  await waitUntil(() => late.lastState?.public?.result, 60000);
+  clearInterval(driver);
+  for (const message of late.messages) {
+    if (message.state) assert.equal(message.state.private, undefined);
+  }
+  for (const message of host.messages) {
+    const actions = message.state?.private?.legal_actions || [];
+    assert.ok(actions.length !== 1 || actions[0].kind.type !== "pass");
+  }
+  const scores = late.lastState.public.players.map((player) => player.score);
+  host.send({ type: "ready", ready: true });
+  await waitUntil(() => late.lastState?.room.seats[0].ready);
+  assert.ok(late.lastState.public.result);
+  late.send({ type: "ready", ready: true });
+  await waitUntil(() => late.lastState?.controller && !late.lastState?.public?.result);
+  assert.equal(late.lastState.private.seat, 1);
+  assert.equal(late.lastState.public.players[1].name, "Late");
+  assert.deepEqual(late.lastState.public.players.map((player) => player.score), scores);
+  assert.equal(late.lastState.room.seats.filter((seat) => seat.ai).length, 2);
 });
 
 test("invalid input, oversize input, and idle admission are observable", async (t) => {

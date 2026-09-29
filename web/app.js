@@ -853,7 +853,7 @@ function renderLobby() {
     number.textContent = String(seat.seat + 1);
     const name = document.createElement("span");
     name.className = "room-seat-name";
-    name.textContent = seat.name;
+    name.textContent = seat.name + (seat.seat === room.host_seat ? "（桌主）" : "");
     const status = document.createElement("span");
     status.className = "room-seat-status";
     status.textContent = seat.ai ? "AI 接手" : seat.watching ? seat.ready ? "觀戰／已準備" : "觀戰／等待下一局" : seat.connected
@@ -865,9 +865,15 @@ function renderLobby() {
   const mine = room.seats[state.viewer_seat];
   $("#ready").textContent = mine?.ready ? "[ 取消準備 ]" : "[ 準備 ]";
   $("#ready").disabled = !onlineConnected() || (room.started && !isResult());
+  const start = $("#start-online");
+  start.hidden = room.started || room.host_seat !== state.viewer_seat
+    || room.seats.every((seat) => seat.connected);
+  start.disabled = !onlineConnected();
   $("#room-status").textContent = onlineNotice || (room.started
-    ? "牌局進行中；斷線可用本分頁自動重連。"
-    : "四位玩家連線並準備後開始。");
+    ? isResult() ? "所有在線玩家準備後開始下一局，觀戰者將接手座位。"
+      : mine?.watching ? "本局由 AI 代打，觀戰至結算後準備下一局即可接手。"
+        : "牌局進行中；新玩家可加入 AI 空位，下一局接手。"
+    : "四人準備後開始；不足四人時，桌主可提前開始，由 AI 補位。");
 }
 
 function applyOnlineState(nextState) {
@@ -1146,6 +1152,10 @@ $("#join-form").addEventListener("submit", (event) => {
 $("#ready").addEventListener("click", () => {
   const mine = state?.room?.seats?.[state.viewer_seat];
   sendOnline({ type: "ready", ready: !mine?.ready });
+});
+
+$("#start-online").addEventListener("click", () => {
+  sendOnline({ type: "start" });
 });
 $("#leave-room").addEventListener("click", leaveOnline);
 $("#copy-room").addEventListener("click", async () => {

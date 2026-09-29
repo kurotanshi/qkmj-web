@@ -60,6 +60,7 @@ enum ClientMessage {
     Ready {
         ready: bool,
     },
+    Start,
     Action {
         revision: u64,
         kind: ActionKind,
@@ -107,6 +108,7 @@ pub struct ClientState {
 pub struct RoomView {
     pub room_code: String,
     pub started: bool,
+    pub host_seat: Option<u8>,
     pub seats: Vec<SeatView>,
 }
 
@@ -221,13 +223,6 @@ impl Room {
         shutdown: watch::Sender<bool>,
     ) -> Result<(Attachment, String), RoomError> {
         validate_name(&name)?;
-        if self.game.is_some() {
-            return Err(RoomError::new(
-                "ROOM_STARTED",
-                "牌局已開始，請使用重連憑證",
-                true,
-            ));
-        }
         let seat = self
             .seats
             .iter()
@@ -241,7 +236,7 @@ impl Room {
             ready: false,
             connection: Some(Connection {
                 generation,
-                controller: true,
+                controller: self.game.is_none(),
                 outbound,
                 shutdown,
             }),
@@ -345,6 +340,27 @@ impl Room {
     ) -> Result<CommandResult, RoomError> {
         self.check_attachment(attachment)?;
         match message {
+            ClientMessage::Start => {
+                if self.host_seat() != Some(attachment.seat) {
+                    return Err(RoomError::new("HOST_ONLY", "只有桌主可以提前開始", false));
+                }
+                if self.game.is_some() {
+                    return Err(RoomError::new("ROOM_STARTED", "牌局已開始", false));
+                }
+                if self
+                    .seats
+                    .iter()
+                    .all(|seat| seat.as_ref().is_some_and(|seat| seat.connection.is_some()))
+                {
+                    return Err(RoomError::new(
+                        "READY_REQUIRED",
+                        "四人已到齊，請等所有玩家準備",
+                        false,
+                    ));
+                }
+                self.start_first_hand()?;
+                Ok(CommandResult { close: false })
+            }
             ClientMessage::Ready { ready } => {
                 if self
                     .game
@@ -377,7 +393,7 @@ impl Room {
                     ));
                 }
                 let game = self.game.as_mut().ok_or_else(|| {
-                    RoomError::new("NOT_STARTED", "四位玩家準備後才能開始", false)
+                    RoomError::new("NOT_STARTED", "請先準備，或由桌主提前開始", false)
                 })?;
                 if matches!(game.phase(), Phase::Result) {
                     return Err(RoomError::new(
@@ -392,6 +408,7 @@ impl Room {
                     kind,
                 })
                 .map_err(engine_error)?;
+                self.auto_pass_unable_seats().map_err(engine_error)?;
                 Ok(CommandResult { close: false })
             }
             ClientMessage::Leave => {
@@ -421,15 +438,7 @@ impl Room {
             if !ready {
                 return Ok(());
             }
-            let mut game = Game::new_secure().map_err(engine_error)?;
-            for (seat, owner) in self.seats.iter().enumerate() {
-                game.set_player_name(seat as u8, owner.as_ref().expect("ready seat").name.clone())
-                    .map_err(engine_error)?;
-            }
-            game.start().map_err(engine_error)?;
-            self.game = Some(game);
-            self.clear_ready_and_restore_controllers();
-            return Ok(());
+            return self.start_first_hand();
         }
 
         let Some(game) = self.game.as_ref() else {
@@ -450,6 +459,13 @@ impl Room {
                     .unwrap_or(true)
             });
         if ready {
+            let game = self.game.as_mut().expect("game exists");
+            for (seat, owner) in self.seats.iter().enumerate() {
+                if let Some(owner) = owner {
+                    game.set_player_name(seat as u8, owner.name.clone())
+                        .map_err(engine_error)?;
+                }
+            }
             self.game
                 .as_mut()
                 .expect("game exists")
@@ -458,6 +474,34 @@ impl Room {
             self.clear_ready_and_restore_controllers();
         }
         Ok(())
+    }
+
+    fn start_first_hand(&mut self) -> Result<(), RoomError> {
+        let mut game = Game::new_secure().map_err(engine_error)?;
+        for (seat, owner) in self.seats.iter().enumerate() {
+            let name = owner
+                .as_ref()
+                .map(|owner| owner.name.clone())
+                .unwrap_or_else(|| format!("AI {}", seat + 1));
+            game.set_player_name(seat as u8, name)
+                .map_err(engine_error)?;
+        }
+        game.start().map_err(engine_error)?;
+        self.game = Some(game);
+        self.clear_ready_and_restore_controllers();
+        Ok(())
+    }
+
+    fn host_seat(&self) -> Option<u8> {
+        self.seats
+            .iter()
+            .enumerate()
+            .filter_map(|(seat, owner)| {
+                let connection = owner.as_ref()?.connection.as_ref()?;
+                Some((seat as u8, connection.generation))
+            })
+            .min_by_key(|&(_, generation)| generation)
+            .map(|(seat, _)| seat)
     }
 
     fn clear_ready_and_restore_controllers(&mut self) {
@@ -525,8 +569,24 @@ impl Room {
         self.game
             .as_mut()
             .expect("AI seat requires a game")
-            .bot_step_for(seat)
-            .map(|_| ())
+            .bot_step_for(seat)?;
+        self.auto_pass_unable_seats()
+    }
+
+    fn auto_pass_unable_seats(&mut self) -> Result<(), EngineError> {
+        let Some(game) = self.game.as_mut() else {
+            return Ok(());
+        };
+        for seat in 0..PLAYER_COUNT as u8 {
+            if game.legal_action_kinds(seat) == [ActionKind::Pass] {
+                game.apply(Action {
+                    revision: game.revision(),
+                    actor: seat,
+                    kind: ActionKind::Pass,
+                })?;
+            }
+        }
+        Ok(())
     }
 
     fn state_for(&self, seat: u8) -> ClientState {
@@ -555,6 +615,7 @@ impl Room {
         RoomView {
             room_code: self.code.clone(),
             started: self.game.is_some(),
+            host_seat: self.host_seat(),
             seats: (0..PLAYER_COUNT)
                 .map(|seat| {
                     let owner = self.seats[seat].as_ref();
@@ -562,9 +623,13 @@ impl Room {
                     let watching = connected && !self.controller(seat);
                     SeatView {
                         seat: seat as u8,
-                        name: owner
-                            .map(|owner| owner.name.clone())
-                            .unwrap_or_else(|| "空位".to_string()),
+                        name: owner.map(|owner| owner.name.clone()).unwrap_or_else(|| {
+                            if self.game.is_some() {
+                                format!("AI {}", seat + 1)
+                            } else {
+                                "空位".to_string()
+                            }
+                        }),
                         connected,
                         ready: owner.is_some_and(|owner| owner.ready),
                         ai: self.game.is_some() && !connected,
@@ -1168,6 +1233,93 @@ mod tests {
     }
 
     #[test]
+    fn human_and_ai_discards_skip_only_forced_passes() {
+        let cases = [
+            (vec![], None),
+            (vec![4, 6], Some(ActionKind::Chow { tiles: [4, 6] })),
+            (vec![5, 5], Some(ActionKind::Pong { tile: 5 })),
+            (
+                vec![5, 5, 5],
+                Some(ActionKind::Kong {
+                    tile: 5,
+                    kind: crate::KongKind::Discard,
+                }),
+            ),
+            (
+                vec![1, 2, 3, 11, 12, 13, 21, 22, 23, 31, 31, 31, 41, 41, 41, 5],
+                Some(ActionKind::Win),
+            ),
+        ];
+        for discarder in 0..PLAYER_COUNT {
+            for ai_discard in [false, true] {
+                for (hand, choice) in &cases {
+                    let mut room = Room::new("0123456789abcdef".to_string());
+                    let attachments: Vec<_> = (0..PLAYER_COUNT)
+                        .map(|seat| {
+                            let (outbound, shutdown) = test_connection();
+                            room.connect_new(format!("P{seat}"), outbound, shutdown)
+                                .unwrap()
+                                .0
+                        })
+                        .collect();
+                    let next = (discarder + 1) % PLAYER_COUNT;
+                    let mut hands = std::array::from_fn(|_| Vec::new());
+                    hands[discarder] = vec![5];
+                    hands[next] = hand.clone();
+                    room.game = Some(Game::fixture(
+                        hands,
+                        std::array::from_fn(|_| Vec::new()),
+                        vec![1; 79],
+                        Phase::NeedDiscard {
+                            seat: discarder as u8,
+                        },
+                        0,
+                        None,
+                        None,
+                        None,
+                        false,
+                    ));
+                    if ai_discard {
+                        room.disconnect(attachments[discarder]).unwrap();
+                        room.run_ai_once().unwrap();
+                    } else {
+                        room.handle(
+                            attachments[discarder],
+                            ClientMessage::Action {
+                                revision: 0,
+                                kind: ActionKind::Discard { tile: 5 },
+                            },
+                        )
+                        .unwrap();
+                    }
+                    if let Some(choice) = choice {
+                        let game = room.game.as_ref().unwrap();
+                        assert!(matches!(game.phase(), Phase::Claim { .. }));
+                        assert!(game.legal_action_kinds(next as u8).contains(choice));
+                        for seat in 0..PLAYER_COUNT {
+                            if seat != next {
+                                assert!(game.legal_action_kinds(seat as u8).is_empty());
+                            }
+                        }
+                        room.handle(
+                            attachments[next],
+                            ClientMessage::Action {
+                                revision: game.revision(),
+                                kind: ActionKind::Pass,
+                            },
+                        )
+                        .unwrap();
+                    }
+                    assert_eq!(
+                        room.game.as_ref().unwrap().phase(),
+                        &Phase::NeedDraw { seat: next as u8 }
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn names_and_codes_are_bounded() {
         assert!(validate_name("Alice").is_ok());
         assert!(validate_name("\n").is_err());
@@ -1259,8 +1411,102 @@ mod tests {
             room.connect_new("Late".to_string(), outbound, shutdown)
                 .unwrap_err()
                 .code,
-            "ROOM_STARTED"
+            "ROOM_FULL"
         );
+    }
+
+    #[test]
+    fn host_can_start_with_one_to_three_humans_and_late_joiners_wait() {
+        for humans in 1..PLAYER_COUNT {
+            let mut room = Room::new("0123456789abcdef".to_string());
+            let attachments: Vec<_> = (0..humans)
+                .map(|seat| {
+                    let (outbound, shutdown) = test_connection();
+                    room.connect_new(format!("P{seat}"), outbound, shutdown)
+                        .unwrap()
+                        .0
+                })
+                .collect();
+            if humans > 1 {
+                assert_eq!(
+                    room.handle(attachments[1], ClientMessage::Start)
+                        .unwrap_err()
+                        .code,
+                    "HOST_ONLY"
+                );
+                assert!(room.game.is_none());
+            }
+            room.handle(attachments[0], ClientMessage::Start).unwrap();
+            assert!(room.state_for(0).private.is_some());
+            assert_eq!(
+                room.room_view().seats.iter().filter(|seat| seat.ai).count(),
+                PLAYER_COUNT - humans
+            );
+            assert_eq!(
+                room.handle(attachments[0], ClientMessage::Start)
+                    .unwrap_err()
+                    .code,
+                "ROOM_STARTED"
+            );
+
+            let before = room.game.as_ref().unwrap().clone();
+            let (outbound, shutdown) = test_connection();
+            let (late, _) = room.connect_new("Late".into(), outbound, shutdown).unwrap();
+            assert_eq!(late.seat as usize, humans);
+            assert_eq!(room.game.as_ref().unwrap(), &before);
+            assert!(room.state_for(late.seat).private.is_none());
+            assert!(room.room_view().seats[humans].watching);
+            assert!(!room.controller(humans));
+            assert_eq!(
+                room.handle(late, ClientMessage::Ready { ready: true })
+                    .unwrap_err()
+                    .code,
+                "HAND_ACTIVE"
+            );
+            assert_eq!(
+                room.handle(
+                    late,
+                    ClientMessage::Action {
+                        revision: before.revision(),
+                        kind: ActionKind::Draw,
+                    },
+                )
+                .unwrap_err()
+                .code,
+                "WATCH_ONLY"
+            );
+        }
+    }
+
+    #[test]
+    fn host_transfers_to_oldest_connection_and_full_rooms_require_readiness() {
+        let mut room = Room::new("0123456789abcdef".to_string());
+        let mut attachments = Vec::new();
+        for seat in 0..PLAYER_COUNT {
+            let (outbound, shutdown) = test_connection();
+            attachments.push(
+                room.connect_new(format!("P{seat}"), outbound, shutdown)
+                    .unwrap()
+                    .0,
+            );
+        }
+        assert_eq!(room.room_view().host_seat, Some(0));
+        assert_eq!(
+            room.handle(attachments[0], ClientMessage::Start)
+                .unwrap_err()
+                .code,
+            "READY_REQUIRED"
+        );
+        assert!(room.game.is_none());
+        room.handle(attachments[0], ClientMessage::Leave).unwrap();
+        assert_eq!(room.host_seat(), Some(1));
+        let (outbound, shutdown) = test_connection();
+        room.connect_new("New".into(), outbound, shutdown).unwrap();
+        assert_eq!(room.host_seat(), Some(1));
+        room.disconnect(attachments[1]).unwrap();
+        assert_eq!(room.host_seat(), Some(2));
+        room.handle(attachments[2], ClientMessage::Start).unwrap();
+        assert!(room.game.is_some());
     }
 
     #[test]

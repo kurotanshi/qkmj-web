@@ -53,11 +53,17 @@ curl http://127.0.0.1:3000/health
 ### 3. 建立房間並開始遊戲
 
 1. 開啟 Vite 網址，切換到「線上房間」，輸入名稱並按「建立」。
-2. 將畫面上的房間代碼交給其他三位玩家；其他玩家在相同網站輸入名稱與代碼後按「加入」。
-3. 四人都連線並按「準備」後，才會開始第一局。一個人建立房間後停在等待畫面是正常的。
+2. 將畫面上的房間代碼交給朋友；其他玩家在相同網站輸入名稱與代碼後按「加入」。
+3. 四人都連線並按「準備」後開始第一局。若只有一至三人，桌主可按「提前開始／AI 補位」，立即讓在場玩家入局，其餘座位由 AI 代打，不必等待其他人的準備。四人到齊時仍需全員準備。
 4. 若要在同一台電腦測試，手動開啟四個新分頁，各自輸入網址。不要直接複製已入房的分頁，以免複製到同一座位的重連資料。
 
 同一區域網路的朋友可使用 Vite 終端機顯示的 Network 網址，例如 `http://192.168.1.10:5173/`；請使用你電腦實際的 IP，並確認防火牆允許連線。朋友電腦上的 `localhost` 指向朋友自己的電腦，不能用來連到你的服務。不同網路的朋友請使用部署後的網站網址。
+
+線上牌局中，若出牌後你只有「無」可選，伺服器會自動略過，不必點擊；有吃、碰、槓或胡的選項時，仍由你決定。若其他玩家有可選動作，牌局會等待他們回覆。
+
+建立房間的人是桌主，名單會標示「桌主」。桌主離線或離房時，由最早加入且仍在線的玩家接任；原桌主重連不會取回桌主身分。
+
+提前開局後，新玩家仍可用房間代碼加入尚未有人認領的 AI 座位。本局先觀戰，AI 繼續代打，不會公開私人手牌。結算後，所有在線玩家（含觀戰者）按「準備」，下一局開始才接手，並沿用該座位的分數。已有玩家但暫時斷線的座位仍保留給原玩家重連，不供新玩家取代。四個座位都有人認領後即為滿房。
 
 遊戲中斷線後，AI 會接手該局；在原分頁重連或重新整理，會先觀戰，下一局開始才恢復操作。重連資料保存在分頁的 `sessionStorage`，因此不要把關閉分頁後重新開啟視為可靠的重連方式。開局前按「離開房間」會釋放座位，讓其他人補位。
 
@@ -68,7 +74,7 @@ curl http://127.0.0.1:3000/health
 | 建立新房間卻顯示「房間已結束，請重新加入」 | 這是舊版提示。更新後重新執行 `npm run dev`，並從 Vite 顯示的網址重新整理網頁。 |
 | 顯示「無法連上房間伺服器」 | 確認 `npm run dev` 已完成建置且仍在運作，並檢查 `/health` 是否回傳 `ok`。若啟動失敗，查看同一個終端機的錯誤訊息。 |
 | 顯示「找不到房間，可能已過期」 | 後端可能已重啟，或房間在所有人離線五分鐘後過期；需要重新建立房間。 |
-| 房間已建立，但牌局沒有開始 | 第一局需要四位玩家都連線並按「準備」。 |
+| 房間已建立，但牌局沒有開始 | 四人到齊時需全員按「準備」；不足四人時，桌主可按「提前開始／AI 補位」。 |
 | 後端顯示埠已被占用 | 先停止之前手動啟動的 Rust 後端，再執行 `npm run dev`。開發腳本固定使用 3000 埠，失敗時會關閉這次啟動的服務。 |
 
 ## 正式版本的本機測試
@@ -222,12 +228,14 @@ PATH="$(dirname "$RUSTC"):$PATH" rustup run 1.98.1 cargo clippy --offline --all-
 
 The server accepts strict JSON WebSocket messages: the first message is
 `create {name}` or `join {room_code, name?, reconnect_token?}`; authenticated
-commands are `ready {ready}`, `action {revision, kind}`, and `leave`. The
+commands are `ready {ready}`, `start` (host-only early start with fewer than
+four connected players), `action {revision, kind}`, and `leave`. The
 server derives the action seat from the authenticated connection. Room codes
 are random hex IDs, tokens are random 256-bit hex values, and no credential is
 placed in a URL, public roster, log, or error. Live state sends a public view
 plus only the current controller's private hand/actions; a same-hand
-reconnect is a read-only watcher until the next hand starts.
+reconnect or a new player claiming an unowned AI seat is a read-only watcher
+until the next hand starts. The public room view includes `host_seat`.
 
 Render uses the single free Singapore Docker service in `render.yaml`. The
 Free service can sleep, cold-start, and restart; this service keeps rooms and
