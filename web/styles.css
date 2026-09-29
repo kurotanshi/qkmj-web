@@ -462,6 +462,24 @@ code {
   color: var(--dim);
 }
 
+.result-action {
+  color: var(--green);
+  white-space: normal;
+  text-align: left;
+}
+
+.result-action:disabled {
+  color: var(--dim);
+}
+
+.round-continuity {
+  flex-basis: 100%;
+  margin: .15em 0 .4em;
+  color: var(--dim);
+  font-size: .8em;
+  line-height: 1.5;
+}
+
 .seat {
   position: absolute;
   min-width: 0;

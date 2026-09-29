@@ -22,7 +22,6 @@ let explicitExit = false;
 const sessionKey = "qkmj-online-session";
 let botTimer = 0;
 let pendingAction = false;
-let nextHandPending = false;
 let lastFocus = "";
 let restoreRequested = false;
 let lastLoggedRevision = null;
@@ -120,7 +119,7 @@ function showError(message) {
   setupError.hidden = false;
   setupError.textContent = text;
   addLog(text);
-  if (mode === "offline" && $("#setup").hidden) setSetupEnabled(true, nextHandPending);
+  if (mode === "offline" && !state?.public) setSetupEnabled(true);
   if (state?.public) {
     renderControls();
     renderActionArea();
@@ -130,17 +129,15 @@ function showError(message) {
   }
 }
 
-function setSetupEnabled(enabled, next) {
+function setSetupEnabled(enabled) {
   $("#setup").hidden = !enabled;
   document.querySelectorAll("#setup select").forEach((control) => {
     control.disabled = !enabled;
   });
   if (mode === "offline") {
-    $("#setup-title").textContent = next ? "設定下一局" : "選擇單機難度";
-    $("#setup-hint").textContent = next
-      ? "總分、莊家與連莊會保留；選好難度後開始下一局。"
-      : "每局開始前可調整；牌局開始後鎖定。";
-    $("#start").textContent = next ? "[ 開始下一局 ]" : "[ 開始牌局 ]";
+    $("#setup-title").textContent = "選擇單機難度";
+    $("#setup-hint").textContent = "選好難度後開局，之後每局沿用。";
+    $("#start").textContent = "[ 開始牌局 ]";
   } else {
     $("#setup-title").textContent = "線上房間";
     $("#setup-hint").textContent = "建立或加入房間；重連憑證只會存於本次瀏覽器分頁。";
@@ -153,10 +150,10 @@ function setMode(nextMode) {
   $("#online-setup").hidden = mode !== "online";
   $("#setup-title").textContent = mode === "offline" ? "單機設定" : "線上房間";
   $("#setup-hint").textContent = mode === "offline"
-    ? "每局開始前可調整；牌局開始後鎖定。"
+    ? "選好難度後開局，之後每局沿用。"
     : "建立或加入房間；重連憑證只會存於本次瀏覽器分頁。";
   if (mode === "online") {
-    setSetupEnabled(true, false);
+    setSetupEnabled(true);
     $("#offline-setup").hidden = true;
     $("#online-setup").hidden = false;
     renderLobby();
@@ -195,7 +192,6 @@ function newWorker() {
       return;
     }
     state = event.data.state;
-    if (nextHandPending) nextHandPending = false;
     recordState(state);
     render();
     pumpBots();
@@ -234,13 +230,6 @@ function startRound() {
   if (mode !== "offline") return;
   $("#setup-error").hidden = true;
   const difficulties = selectedDifficulties();
-  if (nextHandPending && worker && state) {
-    pendingAction = true;
-    setSetupEnabled(false, true);
-    worker.postMessage({ type: "next", difficulties });
-    return;
-  }
-
   let seed;
   try {
     seed = querySeed();
@@ -250,11 +239,10 @@ function startRound() {
   }
 
   state = null;
-  nextHandPending = false;
   lastLoggedRevision = null;
   logLines = [];
   resultRevision = null;
-  setSetupEnabled(false, false);
+  setSetupEnabled(false);
   $("#game").hidden = false;
   newWorker();
   pendingAction = true;
@@ -265,26 +253,29 @@ function restartSession() {
   closeOnline(true);
   resetWorker();
   state = null;
-  nextHandPending = false;
   resultRevision = null;
   lastLoggedRevision = null;
   logLines = [];
   $("#game").hidden = true;
   $("#setup-error").hidden = true;
   setMode("offline");
-  setSetupEnabled(true, false);
+  setSetupEnabled(true);
   $("#start").focus();
 }
 
 function prepareNextHand() {
+  if (!isResult() || pendingAction || !onlineConnected()) return;
+  rememberFocus();
   if (mode === "online") {
+    if (state.room.seats[state.viewer_seat]?.ready) return;
+    pendingAction = true;
     sendOnline({ type: "ready", ready: true });
-    return;
+  } else {
+    if (!worker) return;
+    pendingAction = true;
+    worker.postMessage({ type: "next" });
   }
-  nextHandPending = true;
-  setSetupEnabled(true, true);
-  $("#setup-error").hidden = true;
-  $("#start").focus();
+  renderActionArea();
 }
 
 function sendAction(action) {
@@ -605,19 +596,28 @@ function renderActionArea() {
     return;
   }
   if (isResult()) {
+    const online = mode === "online";
+    const ready = online && state.room.seats[state.viewer_seat]?.ready;
     const next = document.createElement("button");
     next.type = "button";
     next.className = "action-button result-action";
-    next.textContent = mode === "online" ? "準備下一局" : "下一局";
+    next.textContent = online
+      ? ready ? "已準備，等待其他玩家" : pendingAction ? "準備中…" : "準備下一局"
+      : pendingAction ? "發牌中…" : "下一局 →";
+    next.disabled = pendingAction || ready;
     next.dataset.focusKey = "result-next";
     next.addEventListener("click", prepareNextHand);
-    const restart = document.createElement("button");
-    restart.type = "button";
-    restart.className = "action-button result-action";
-    restart.textContent = "重新開始";
-    restart.dataset.focusKey = "result-restart";
-    restart.addEventListener("click", restartSession);
-    tray.append(next, restart);
+    const hint = document.createElement("p");
+    hint.className = "round-continuity";
+    hint.setAttribute("role", "status");
+    if (online) {
+      const connected = state.room.seats.filter((seat) => seat.connected);
+      hint.textContent = "已準備 " + connected.filter((seat) => seat.ready).length
+        + "／" + connected.length + " 人，全部準備後接著開局。";
+    } else {
+      hint.textContent = "沿用難度與累計分數，接著打。";
+    }
+    tray.append(next, hint);
     return;
   }
 
@@ -639,7 +639,7 @@ function renderActionArea() {
     waiting.className = "action-wait";
     const hasDiscard = actions.some((action) => action.kind.type === "discard");
     waiting.textContent = state.private.needs_human
-      ? hasDiscard ? "請選牌出牌" : "請選擇動作"
+      ? hasDiscard ? "← → 選牌，空白鍵／Enter 出牌" : "請選擇動作"
       : "電腦思考中…";
     tray.append(waiting);
   }
@@ -1057,9 +1057,13 @@ function isTextEntry(target) {
 }
 
 function handleKeydown(event) {
+  if (event.defaultPrevented) return;
+  const handButton = event.target?.closest?.("#human-hand button");
+  const activateTile = event.key === "Enter" || event.code === "Space" || event.key === " ";
+  // Handle tile activation once on keydown, including suppressing held-key repeats.
+  if (handButton && activateTile) event.preventDefault();
   if (
-    event.defaultPrevented
-    || event.ctrlKey
+    event.ctrlKey
     || event.metaKey
     || event.altKey
     || event.repeat
@@ -1070,7 +1074,25 @@ function handleKeydown(event) {
     || !state.private
     || pendingAction
     || isResult()
+    || !onlineConnected()
   ) return;
+  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    const buttons = [...document.querySelectorAll("#human-hand button:not(:disabled)")];
+    if (buttons.length) {
+      event.preventDefault();
+      const current = buttons.indexOf(document.activeElement);
+      const direction = event.key === "ArrowRight" ? 1 : -1;
+      const next = current < 0
+        ? direction > 0 ? 0 : buttons.length - 1
+        : (current + direction + buttons.length) % buttons.length;
+      buttons[next].focus({ preventScroll: true });
+    }
+    return;
+  }
+  if (handButton && activateTile) {
+    if (!handButton.disabled) handButton.click();
+    return;
+  }
   const key = event.key.toUpperCase();
   if (key.length === 1 && handLetters.includes(key)) {
     const button = [...document.querySelectorAll("#human-hand button")][handLetters.indexOf(key)];
@@ -1107,7 +1129,7 @@ $("#mode-offline").addEventListener("click", () => {
   state = null;
   $("#game").hidden = true;
   setMode("offline");
-  setSetupEnabled(true, false);
+  setSetupEnabled(true);
 });
 $("#mode-online").addEventListener("click", () => {
   resetWorker();
@@ -1168,7 +1190,7 @@ $("#copy-room").addEventListener("click", async () => {
   }
 });
 document.addEventListener("keydown", handleKeydown);
-setSetupEnabled(true, false);
+setSetupEnabled(true);
 const initialOnlineSession = savedOnlineSession();
 if (initialOnlineSession) {
   setMode("online");
