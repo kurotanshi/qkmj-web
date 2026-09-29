@@ -98,6 +98,13 @@ button:hover:not(:disabled),
   letter-spacing: .02em;
 }
 
+.header-actions,
+.room-actions {
+  display: flex;
+  align-items: center;
+  gap: .5em;
+}
+
 .header-button {
   min-height: 2em;
   padding: 0 .6em;
@@ -180,6 +187,102 @@ select:disabled {
   align-items: center;
   gap: 1em;
   margin-bottom: 1.8em;
+}
+
+.mode-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5em;
+  margin: 1.5em 0 1em;
+}
+
+.online-forms {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.4em;
+  max-width: 42em;
+  margin: 1.2em 0;
+}
+
+.online-form {
+  display: grid;
+  gap: .55em;
+  align-content: start;
+  border-top: 1px solid var(--line);
+  padding-top: .6em;
+}
+
+.online-form h2 {
+  margin: 0;
+  color: var(--yellow);
+  font-size: 1em;
+  font-weight: 400;
+}
+
+.online-form label {
+  display: grid;
+  gap: .2em;
+  color: var(--dim);
+}
+
+input {
+  width: 100%;
+  min-height: 2em;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: .15em 0;
+  color: var(--paper);
+  background: var(--black);
+  font: inherit;
+}
+
+input:focus-visible {
+  outline: 1px solid #fff;
+  outline-offset: 2px;
+}
+
+.room-lobby {
+  max-width: 42em;
+  margin: 1em 3em;
+  font-size: .7em;
+  line-height: 1.35;
+  border-top: 1px solid var(--line);
+  padding-top: .7em;
+}
+
+.room-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1em;
+  color: var(--green);
+}
+
+.room-roster {
+  display: grid;
+  gap: .2em;
+  margin: .8em 0;
+}
+
+.room-seat {
+  display: grid;
+  grid-template-columns: 2em minmax(0, 1fr) auto;
+  gap: .5em;
+  align-items: baseline;
+  border-bottom: 1px dotted var(--line);
+  padding: .25em 0;
+}
+
+.room-seat-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.room-seat-status {
+  color: var(--dim);
+  white-space: nowrap;
 }
 
 .terminal-button {
@@ -935,6 +1038,11 @@ code {
     grid-template-columns: 1fr;
     gap: .7em;
     margin-top: 1.4em;
+  }
+
+  .online-forms {
+    grid-template-columns: 1fr;
+    gap: 1em;
   }
 
   .game-grid {

@@ -3,20 +3,39 @@
 以 Rust／WebAssembly 重製的 QKMJ 十六張麻將，保留黑底 ANSI 彩色文字與 Telnet 終端機風格。
 
 - 單機瀏覽器遊玩：1 位真人與 3 位 AI，各自可選弱／中／強。
+- 線上四人房間：伺服器主持牌局、斷線由中 AI 接手，重連憑證保留座位。
 - 字體隨視窗縮放，支援滑鼠、鍵盤與觸控操作。
 - Rust 遊戲引擎在 Web Worker 執行；前端使用原生 HTML、CSS 與 JavaScript。
 
 ## 快速開始
 
-遊戲與 AI 都在瀏覽器執行，不需要遊戲後端。建置後以 HTTP 提供 `web/` 的靜態檔案；不要直接用 `file://` 開啟。以下指令皆從儲存庫根目錄執行。
+以下指令皆從儲存庫根目錄執行。不要直接用 `file://` 開啟。
 
-依照 [建置與驗證說明](#contributing-and-verification) 安裝固定版本的 Rust 與 wasm-bindgen，產生 `web/pkg/` 後執行：
+依照 [建置與驗證說明](#contributing-and-verification) 安裝固定版本的 Rust、wasm-bindgen 與 Node 24，然後：
 
 ```sh
-python3 -m http.server --directory web 8080
+npm ci
+npm run dev
 ```
 
-開啟 <http://127.0.0.1:8080/>。完整操作、牌型與計分規則見 [遊戲說明](#play)。
+開啟 <http://127.0.0.1:5173/>。`npm run dev` 會只建置一次 Wasm，再交給 Vite；啟動線上房間時另開終端機執行 `cargo run --release --features server --bin qkmj-server`，Vite 會代理 `/ws`。
+
+Production build and native service:
+
+```sh
+npm run build
+PORT=3000 cargo run --release --features server --bin qkmj-server
+```
+
+服務會提供 `dist/`、`/ws` 與 `/health`，預設綁定 `0.0.0.0:3000`。房間與重連憑證只在記憶體中存在，服務重啟後所有房間消失；沒有公開觀眾、登入、資料庫或多實例協調。
+
+After the release server is built, run the real Node 24 socket regression with:
+
+```sh
+node --test tests/ws-regression.mjs
+```
+
+The test chooses an available local port, observes child startup/exit, and covers four connected clients, AI takeover, reconnect watching, Result readiness, stale retries, malformed/unknown/oversize input, and idle unauthenticated admission.
 
 ## 專案結構
 
@@ -24,6 +43,9 @@ python3 -m http.server --directory web 8080
 - `src/`：Rust 規則、遊戲狀態與 AI。
 - `tests/`：引擎與回歸測試。
 - `web/`：終端機風格介面及 Worker。
+- `src/server.rs`、`src/bin/qkmj-server.rs`：feature-gated 原生房間、WebSocket 與靜態服務。
+- `scripts/build-wasm.mjs`、`vite.config.js`：固定工具鏈的 Wasm 產出與 Vite bundle。
+- `Dockerfile`、`render.yaml`：非 root 的單一 Render Free 服務部署設定。
 - `web/pkg/`、`target/`、`.tools/`：產生的網頁套件、Rust 建置產物與本機工具，不納入版本控制。
 - `AGENTS.md`：貢獻指南。
 
@@ -93,9 +115,9 @@ tai, payment source, settlement, dealer change, and continuation count.
 ## Contributing and verification
 
 The single Rust crate in `src/` is shared by native tests and WebAssembly.
-The static UI is in `web/`; `worker.js` owns the Wasm game and bot steps.
-There is no framework, server, remote AI, or new dependency beyond serde,
-serde_json, and the pinned Wasm binding.
+The static UI is in `web/`; `worker.js` owns only the offline Wasm game and
+bot steps. The optional `server` feature adds the native Axum/Tokio service;
+the default crate remains the offline library and Wasm target.
 
 Verified toolchain and binding pins:
 
@@ -125,7 +147,26 @@ node --check web/worker.js
 rustup run 1.98.1 cargo build --release --target wasm32-unknown-unknown
 ./.tools/bin/wasm-bindgen --target web --out-dir web/pkg target/wasm32-unknown-unknown/release/qkmj_browser.wasm
 PATH="$(dirname "$RUSTC"):$PATH" CARGO_TARGET_DIR=.acceptance/clippy-target cargo clippy --offline --all-targets -- -D warnings
+npm ci
+npm run build
+rustup run 1.98.1 cargo test --offline --features server
+PATH="$(dirname "$RUSTC"):$PATH" rustup run 1.98.1 cargo clippy --offline --all-targets --features server -- -D warnings
 ```
+
+The server accepts strict JSON WebSocket messages: the first message is
+`create {name}` or `join {room_code, name?, reconnect_token?}`; authenticated
+commands are `ready {ready}`, `action {revision, kind}`, and `leave`. The
+server derives the action seat from the authenticated connection. Room codes
+are random hex IDs, tokens are random 256-bit hex values, and no credential is
+placed in a URL, public roster, log, or error. Live state sends a public view
+plus only the current controller's private hand/actions; a same-hand
+reconnect is a read-only watcher until the next hand starts.
+
+Render uses the single free Singapore Docker service in `render.yaml`. The
+Free service can sleep, cold-start, and restart; this service keeps rooms and
+reconnect credentials only in memory, so a restart ends active rooms. Set a
+custom domain manually in the Render dashboard and add the DNS record at the
+DNS provider; this repository does not perform deployment or DNS changes.
 
 Native tests cover seeded natural win and reserve-wall draw paths, tile
 conservation, flower/kong lifecycle, legal claims and kongs, scoring and

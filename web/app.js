@@ -1,6 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 const windNames = ["", "東", "南", "西", "北"];
-const positionWinds = { south: 1, east: 2, north: 3, west: 4 };
+const positionOffsets = { south: 0, east: 1, north: 2, west: 3 };
 const handLetters = "ABCDEFGHIJKLMNOPQ".split("");
 const tileNames = new Map([
   [31, "東風"], [32, "南風"], [33, "西風"], [34, "北風"],
@@ -12,6 +12,14 @@ const chineseRanks = ["", "一", "二", "三", "四", "五", "六", "七", "八"
 let worker = null;
 let workerEpoch = 0;
 let state = null;
+let mode = "offline";
+let socket = null;
+let socketEpoch = 0;
+let onlineAdmitted = false;
+let reconnectTimer = 0;
+let reconnectAttempts = 0;
+let explicitExit = false;
+const sessionKey = "qkmj-online-session";
 let botTimer = 0;
 let pendingAction = false;
 let nextHandPending = false;
@@ -20,6 +28,7 @@ let restoreRequested = false;
 let lastLoggedRevision = null;
 let resultRevision = null;
 let logLines = [];
+let onlineNotice = "";
 
 function tileLabel(tile) {
   if (tileNames.has(tile)) return tileNames.get(tile);
@@ -88,6 +97,7 @@ function addLog(message) {
 }
 
 function recordState(snapshot) {
+  if (!snapshot?.public) return;
   const revision = snapshot?.public?.revision;
   if (revision === lastLoggedRevision) return;
   lastLoggedRevision = revision;
@@ -103,18 +113,19 @@ function rememberFocus() {
 }
 
 function showError(message) {
+  pendingAction = false;
   const text = "錯誤：" + message + "。可按「重新開始」恢復。";
   const setupError = $("#setup-error");
   setupError.hidden = false;
   setupError.textContent = text;
   addLog(text);
-  if ($("#setup").hidden) setSetupEnabled(true, nextHandPending);
-  if (state) {
-    $("#status").textContent = text;
+  if (mode === "offline" && $("#setup").hidden) setSetupEnabled(true, nextHandPending);
+  if (state?.public) {
     renderControls();
     renderActionArea();
     requestAnimationFrame(restoreFocus);
     renderMessages();
+    $("#status").textContent = text;
   }
 }
 
@@ -123,11 +134,35 @@ function setSetupEnabled(enabled, next) {
   document.querySelectorAll("#setup select").forEach((control) => {
     control.disabled = !enabled;
   });
-  $("#setup-title").textContent = next ? "設定下一局" : "選擇三位電腦的難度";
-  $("#setup-hint").textContent = next
-    ? "總分、莊家與連莊會保留；選好難度後開始下一局。"
-    : "每局開始前可調整；牌局開始後鎖定。";
-  $("#start").textContent = next ? "[ 開始下一局 ]" : "[ 開始牌局 ]";
+  if (mode === "offline") {
+    $("#setup-title").textContent = next ? "設定下一局" : "選擇單機難度";
+    $("#setup-hint").textContent = next
+      ? "總分、莊家與連莊會保留；選好難度後開始下一局。"
+      : "每局開始前可調整；牌局開始後鎖定。";
+    $("#start").textContent = next ? "[ 開始下一局 ]" : "[ 開始牌局 ]";
+  } else {
+    $("#setup-title").textContent = "線上房間";
+    $("#setup-hint").textContent = "建立或加入房間；重連憑證只會存於本次瀏覽器分頁。";
+  }
+}
+
+function setMode(nextMode) {
+  mode = nextMode;
+  $("#offline-setup").hidden = mode !== "offline";
+  $("#online-setup").hidden = mode !== "online";
+  $("#setup-title").textContent = mode === "offline" ? "單機設定" : "線上房間";
+  $("#setup-hint").textContent = mode === "offline"
+    ? "每局開始前可調整；牌局開始後鎖定。"
+    : "建立或加入房間；重連憑證只會存於本次瀏覽器分頁。";
+  if (mode === "online") {
+    setSetupEnabled(true, false);
+    $("#offline-setup").hidden = true;
+    $("#online-setup").hidden = false;
+    renderLobby();
+  } else {
+    clearOnlineNotice();
+    renderLobby();
+  }
 }
 
 function resetWorker() {
@@ -146,7 +181,7 @@ function resetWorker() {
 function newWorker() {
   resetWorker();
   const epoch = workerEpoch;
-  worker = new Worker("./worker.js", { type: "module" });
+  worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
   worker.onmessage = (event) => {
     if (epoch !== workerEpoch) return;
     pendingAction = false;
@@ -195,6 +230,7 @@ function querySeed() {
 }
 
 function startRound() {
+  if (mode !== "offline") return;
   $("#setup-error").hidden = true;
   const difficulties = selectedDifficulties();
   if (nextHandPending && worker && state) {
@@ -225,6 +261,7 @@ function startRound() {
 }
 
 function restartSession() {
+  closeOnline(true);
   resetWorker();
   state = null;
   nextHandPending = false;
@@ -233,11 +270,16 @@ function restartSession() {
   logLines = [];
   $("#game").hidden = true;
   $("#setup-error").hidden = true;
+  setMode("offline");
   setSetupEnabled(true, false);
   $("#start").focus();
 }
 
 function prepareNextHand() {
+  if (mode === "online") {
+    sendOnline({ type: "ready", ready: true });
+    return;
+  }
   nextHandPending = true;
   setSetupEnabled(true, true);
   $("#setup-error").hidden = true;
@@ -245,10 +287,17 @@ function prepareNextHand() {
 }
 
 function sendAction(action) {
-  if (!worker || !state || pendingAction || isResult()) return;
+  if (!state || pendingAction || isResult()) return;
   rememberFocus();
   pendingAction = true;
-  worker.postMessage({ type: "action", action });
+  if (mode === "online") {
+    sendOnline({ type: "action", revision: action.revision, kind: action.kind });
+  } else if (worker) {
+    worker.postMessage({ type: "action", action });
+  } else {
+    pendingAction = false;
+    return;
+  }
   renderControls();
   renderActionArea();
 }
@@ -275,7 +324,7 @@ function actionButton(action, focusKey) {
   button.textContent = actionLabel(action);
   button.dataset.focusKey = focusKey;
   button.dataset.actionType = action.kind.type;
-  button.disabled = pendingAction;
+  button.disabled = pendingAction || !onlineConnected();
   button.addEventListener("click", () => sendAction(action));
   return button;
 }
@@ -299,8 +348,10 @@ function discardElement(discard) {
 }
 
 function playerForPosition(position) {
-  const physicalWind = positionWinds[position];
-  return state.public.players.find((player) => player.physical_wind === physicalWind);
+  if (!state?.public?.players) return null;
+  const viewer = Number.isInteger(state.viewer_seat) ? state.viewer_seat : 0;
+  const seat = (viewer + positionOffsets[position]) % state.public.players.length;
+  return state.public.players[seat];
 }
 
 function revealFor(player) {
@@ -343,6 +394,7 @@ function renderRiverLane(player, position) {
 }
 
 function renderOpponent(player, position) {
+  if (!player) return document.createElement("span");
   const article = document.createElement("article");
   article.className = "edge-player edge-" + position;
   if (state.public.current_seat === player.seat) article.classList.add("is-current");
@@ -381,11 +433,17 @@ function renderOpponent(player, position) {
 
 function renderHumanSeat() {
   const player = playerForPosition("south");
+  if (!player) return;
+  const privateState = state.private;
   const heading = $("#human-seat-head");
   heading.className = "edge-heading human-heading";
   if (state.public.current_seat === player.seat) heading.classList.add("is-current");
-  heading.textContent = windNames[player.physical_wind] + " " + player.name;
-  $("#human-count").textContent = "手牌 " + state.private.hand.length + " 張";
+  heading.textContent = windNames[player.physical_wind] + " " + player.name
+    + (privateState ? "（你）" : "（觀察中）");
+  const visibleHand = privateState?.hand || (isResult() ? revealFor(player) : []);
+  $("#human-count").textContent = privateState || isResult()
+    ? "手牌 " + visibleHand.length + " 張"
+    : "私人手牌不公開";
   const flowers = $("#human-flowers");
   flowers.replaceChildren();
   flowers.setAttribute("aria-label", player.name + " 的花牌");
@@ -500,13 +558,14 @@ function infoLine(text, className) {
 
 function renderInfo() {
   $("#round-label").textContent = windNames[state.public.round_wind] + "局";
-  const human = state.public.players[state.public.human_seat];
+  const viewer = Number.isInteger(state.viewer_seat) ? state.viewer_seat : state.public.human_seat;
+  const human = state.public.players[viewer];
   $("#wall-count").textContent = "牌山 " + state.public.wall_remaining;
   const round = $("#round-info");
   round.replaceChildren(
     infoLine(windNames[state.public.round_wind] + "局  莊" + windNames[state.public.dealer + 1] + "位"),
     infoLine("連莊 " + state.public.consecutive_dealer),
-    infoLine("你  門風" + windNames[human.door_wind]),
+    infoLine((state.private ? "你" : "觀察席") + "  門風" + windNames[human.door_wind]),
   );
   const scores = $("#scores");
   scores.replaceChildren();
@@ -537,11 +596,18 @@ function renderInfo() {
 function renderActionArea() {
   const tray = $("#action-tray");
   tray.replaceChildren();
+  if (!onlineConnected()) {
+    const waiting = document.createElement("p");
+    waiting.className = "action-wait";
+    waiting.textContent = "連線中，暫停操作…";
+    tray.append(waiting);
+    return;
+  }
   if (isResult()) {
     const next = document.createElement("button");
     next.type = "button";
     next.className = "action-button result-action";
-    next.textContent = "下一局";
+    next.textContent = mode === "online" ? "準備下一局" : "下一局";
     next.dataset.focusKey = "result-next";
     next.addEventListener("click", prepareNextHand);
     const restart = document.createElement("button");
@@ -554,7 +620,14 @@ function renderActionArea() {
     return;
   }
 
-  const actions = state.private.legal_actions || [];
+  const actions = state.private?.legal_actions || [];
+  if (!state.private) {
+    const waiting = document.createElement("p");
+    waiting.className = "action-wait";
+    waiting.textContent = "觀察中，私人動作不公開";
+    tray.append(waiting);
+    return;
+  }
   actions
     .filter((action) => action.kind.type !== "discard")
     .forEach((action, index) => {
@@ -574,6 +647,10 @@ function renderActionArea() {
 function renderControls() {
   const hand = $("#human-hand");
   hand.replaceChildren();
+  if (!state.private) {
+    if (isResult()) appendTiles(hand, revealFor(playerForPosition("south")), false);
+    return;
+  }
   const actions = state.private.legal_actions || [];
   const discardByTile = new Map(
     actions
@@ -594,7 +671,7 @@ function renderControls() {
     button.dataset.focusKey = "tile-" + tile + "-" + index;
     button.setAttribute("aria-label", key.textContent + "：打出" + tileLabel(tile));
     const action = discardByTile.get(tile);
-    button.disabled = !action || pendingAction || isResult();
+    button.disabled = !action || pendingAction || isResult() || !onlineConnected();
     if (action && !isResult()) button.addEventListener("click", () => sendAction(action));
     slot.append(key, button);
     hand.append(slot);
@@ -660,7 +737,7 @@ function renderMessages() {
   const log = $("#message-log");
   log.replaceChildren();
   for (const message of logLines) log.append(infoLine(message, "log-line"));
-  $("#status").textContent = state.public.status || "";
+  $("#status").textContent = onlineNotice || state.public.status || "";
   renderResultDetails();
 }
 
@@ -668,10 +745,10 @@ function renderCompass() {
   const compass = $("#compass");
   const positions = ["west", "south", "east", "north"];
   for (const position of positions) {
-    const physicalWind = positionWinds[position];
-    const player = state.public.players.find((item) => item.physical_wind === physicalWind);
+    const player = playerForPosition(position);
     const item = $("#compass-seat-" + position);
     item.className = "compass-seat compass-" + position;
+    if (!player) continue;
     if (state.public.current_seat === player.seat) item.classList.add("is-current");
     item.textContent = windNames[player.physical_wind] + " " + player.name;
     item.setAttribute("aria-label", windNames[player.physical_wind] + "位 " + player.name);
@@ -697,8 +774,234 @@ function restoreFocus() {
   (target || fallback).focus({ preventScroll: true });
 }
 
+function savedOnlineSession() {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(sessionKey) || "null");
+    return value?.roomCode && value?.token ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeOnlineSession(roomCode, token) {
+  sessionStorage.setItem(sessionKey, JSON.stringify({ roomCode, token }));
+}
+
+function clearOnlineSession() {
+  sessionStorage.removeItem(sessionKey);
+}
+
+function websocketUrl() {
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  return protocol + "//" + location.host + "/ws";
+}
+
+function sendOnline(message) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    pendingAction = false;
+    showOnlineError("尚未連上房間");
+    return false;
+  }
+  socket.send(JSON.stringify(message));
+  return true;
+}
+
+function showOnlineError(message) {
+  const text = "線上狀態：" + message;
+  onlineNotice = text;
+  const error = $("#setup-error");
+  error.hidden = false;
+  error.textContent = text;
+  $("#room-status").textContent = text;
+  addLog(text);
+  if (state?.public) {
+    renderLobby();
+    renderControls();
+    renderActionArea();
+    renderMessages();
+    $("#status").textContent = text;
+  }
+}
+
+function clearOnlineNotice() {
+  onlineNotice = "";
+  $("#setup-error").hidden = true;
+}
+
+function onlineConnected() {
+  return mode !== "online" || (onlineAdmitted && socket?.readyState === WebSocket.OPEN);
+}
+
+function renderLobby() {
+  const room = state?.room;
+  const lobby = $("#room-lobby");
+  const forms = document.querySelector(".online-forms");
+  const retry = $("#retry-online");
+  const saved = savedOnlineSession();
+  lobby.hidden = mode !== "online" || !room;
+  if (forms) forms.hidden = Boolean(room);
+  if (retry) retry.hidden = mode !== "online" || onlineConnected() || !saved;
+  if (!room) return;
+  $("#room-code").textContent = room.room_code;
+  const roster = $("#room-roster");
+  roster.replaceChildren();
+  for (const seat of room.seats || []) {
+    const row = document.createElement("div");
+    row.className = "room-seat";
+    const number = document.createElement("span");
+    number.textContent = String(seat.seat + 1);
+    const name = document.createElement("span");
+    name.className = "room-seat-name";
+    name.textContent = seat.name;
+    const status = document.createElement("span");
+    status.className = "room-seat-status";
+    status.textContent = seat.ai ? "AI 接手" : seat.watching ? seat.ready ? "觀戰／已準備" : "觀戰／等待下一局" : seat.connected
+      ? seat.ready ? "已準備" : "已連線"
+      : "離線";
+    row.append(number, name, status);
+    roster.append(row);
+  }
+  const mine = room.seats[state.viewer_seat];
+  $("#ready").textContent = mine?.ready ? "[ 取消準備 ]" : "[ 準備 ]";
+  $("#ready").disabled = !onlineConnected() || (room.started && !isResult());
+  $("#room-status").textContent = onlineNotice || (room.started
+    ? "牌局進行中；斷線可用本分頁自動重連。"
+    : "四位玩家連線並準備後開始。");
+}
+
+function applyOnlineState(nextState) {
+  clearOnlineNotice();
+  onlineAdmitted = true;
+  state = { ...nextState, online: true, private: nextState.private || null };
+  pendingAction = false;
+  renderLobby();
+  if (!state.public) {
+    $("#setup").hidden = false;
+    $("#game").hidden = true;
+    return;
+  }
+  $("#setup").hidden = true;
+  $("#game").hidden = false;
+  recordState(state);
+  render();
+}
+
+function connectOnline(command) {
+  closeOnline(false);
+  explicitExit = false;
+  onlineAdmitted = false;
+  if (state?.public) render();
+  const epoch = ++socketEpoch;
+  socket = new WebSocket(websocketUrl());
+  socket.addEventListener("open", () => {
+    if (epoch !== socketEpoch) return;
+    socket.send(JSON.stringify(command));
+    showOnlineError("已連線，等待房間回覆…");
+  });
+  socket.addEventListener("message", (event) => {
+    if (epoch !== socketEpoch) return;
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch {
+      showOnlineError("伺服器訊息格式無效");
+      return;
+    }
+    if (message.type === "created" || message.type === "joined") {
+      reconnectAttempts = 0;
+      storeOnlineSession(message.room_code, message.seat_token);
+      applyOnlineState(message.state);
+      return;
+    }
+    if (message.type === "state") {
+      applyOnlineState(message.state);
+      return;
+    }
+    if (message.type === "error") {
+      pendingAction = false;
+      if (message.state) applyOnlineState(message.state);
+      if (["ROOM_NOT_FOUND", "INVALID_TOKEN"].includes(message.code)) {
+        closeOnline(true);
+        state = null;
+        resultRevision = null;
+        $("#game").hidden = true;
+        setMode("online");
+        $("#setup").hidden = false;
+        renderLobby();
+        clearOnlineSession();
+        showOnlineError(message.message || "房間或重連憑證無效");
+        return;
+      }
+      showOnlineError(message.code === "DUPLICATE_CONNECTION"
+        ? "此座位仍有另一條連線，保留本分頁憑證並自動重試。"
+        : message.message || "伺服器拒絕了要求");
+    }
+  });
+  socket.addEventListener("error", () => {
+    if (epoch === socketEpoch) showOnlineError("網路錯誤");
+  });
+  socket.addEventListener("close", () => {
+    if (epoch !== socketEpoch) return;
+    socket = null;
+    onlineAdmitted = false;
+    pendingAction = false;
+    if (explicitExit) return;
+    const saved = savedOnlineSession();
+    if (!saved || reconnectAttempts >= 6) {
+      showOnlineError(saved ? "重連次數已達上限，請重新加入房間" : "房間已結束，請重新加入");
+      if (state?.public) render();
+      renderLobby();
+      return;
+    }
+    const delay = Math.min(5000, 250 * (2 ** reconnectAttempts));
+    reconnectAttempts += 1;
+    showOnlineError("連線中斷，" + delay + "ms 後重連…");
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = 0;
+      const session = savedOnlineSession();
+      if (session) connectOnline({
+        type: "join",
+        room_code: session.roomCode,
+        reconnect_token: session.token,
+      });
+    }, delay);
+    renderLobby();
+    if (state?.public) render();
+  });
+}
+
+function closeOnline(explicit) {
+  if (reconnectTimer) window.clearTimeout(reconnectTimer);
+  reconnectTimer = 0;
+  socketEpoch += 1;
+  onlineAdmitted = false;
+  if (socket) {
+    if (explicit && onlineAdmitted && state?.room && !state.room.started && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "leave" }));
+    }
+    socket.close();
+    socket = null;
+  }
+  if (explicit) {
+    explicitExit = true;
+    clearOnlineSession();
+  }
+}
+
+function leaveOnline() {
+  closeOnline(true);
+  state = null;
+  clearOnlineNotice();
+  $("#setup").hidden = false;
+  $("#game").hidden = true;
+  setMode("online");
+}
+
 function render() {
-  if (!state) return;
+  if (!state?.public) {
+    renderLobby();
+    return;
+  }
   rememberFocus();
   const wasResult = resultRevision !== null;
   const resultNow = isResult();
@@ -726,10 +1029,10 @@ function render() {
 }
 
 function pumpBots() {
-  if (botTimer || !state || pendingAction || isResult() || state.private.needs_human) return;
+  if (mode !== "offline" || botTimer || !state?.private || pendingAction || isResult() || state.private.needs_human) return;
   botTimer = window.setTimeout(() => {
     botTimer = 0;
-    if (worker && state && !pendingAction && !isResult() && !state.private.needs_human) {
+    if (worker && state?.private && !pendingAction && !isResult() && !state.private.needs_human) {
       pendingAction = true;
       worker.postMessage({ type: "bot" });
     }
@@ -751,6 +1054,7 @@ function handleKeydown(event) {
     || !$("#setup").hidden
     || isTextEntry(event.target)
     || !state
+    || !state.private
     || pendingAction
     || isResult()
   ) return;
@@ -765,7 +1069,7 @@ function handleKeydown(event) {
     return;
   }
   if (event.key === "0") {
-    const action = state.private.legal_actions.find((item) => item.kind.type === "pass");
+    const action = state.private?.legal_actions.find((item) => item.kind.type === "pass");
     if (action) {
       event.preventDefault();
       document.querySelector("#action-tray button[data-action-type='pass']")?.focus({ preventScroll: true });
@@ -774,7 +1078,7 @@ function handleKeydown(event) {
     return;
   }
   if (event.code === "Space" && event.target?.tagName !== "BUTTON") {
-    const action = state.private.legal_actions.find((item) => item.kind.type === "draw");
+    const action = state.private?.legal_actions.find((item) => item.kind.type === "draw");
     if (action) {
       event.preventDefault();
       document.querySelector("#action-tray button[data-action-type='draw']")?.focus({ preventScroll: true });
@@ -785,5 +1089,75 @@ function handleKeydown(event) {
 
 $("#start").addEventListener("click", startRound);
 $("#restart-top").addEventListener("click", restartSession);
+$("#mode-offline").addEventListener("click", () => {
+  closeOnline(true);
+  state = null;
+  $("#game").hidden = true;
+  setMode("offline");
+  setSetupEnabled(true, false);
+});
+$("#mode-online").addEventListener("click", () => {
+  resetWorker();
+  setMode("online");
+  const session = savedOnlineSession();
+  if (session && !socket) {
+    connectOnline({ type: "join", room_code: session.roomCode, reconnect_token: session.token });
+  }
+});
+$("#retry-online").addEventListener("click", () => {
+  const session = savedOnlineSession();
+  if (!session) return;
+  reconnectAttempts = 0;
+  connectOnline({
+    type: "join",
+    room_code: session.roomCode,
+    reconnect_token: session.token,
+  });
+});
+$("#create-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const name = $("#create-name").value.trim();
+  if (!name) return showOnlineError("請輸入名稱");
+  clearOnlineSession();
+  setMode("online");
+  connectOnline({ type: "create", name });
+});
+$("#join-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const roomCode = $("#join-code").value.trim().toLowerCase();
+  const name = $("#join-name").value.trim();
+  if (!roomCode) return showOnlineError("請輸入房間代碼");
+  if (!name) return showOnlineError("新座位請輸入名稱");
+  clearOnlineSession();
+  setMode("online");
+  connectOnline({
+    type: "join",
+    room_code: roomCode,
+    name,
+  });
+});
+$("#ready").addEventListener("click", () => {
+  const mine = state?.room?.seats?.[state.viewer_seat];
+  sendOnline({ type: "ready", ready: !mine?.ready });
+});
+$("#leave-room").addEventListener("click", leaveOnline);
+$("#copy-room").addEventListener("click", async () => {
+  const code = $("#room-code").textContent;
+  try {
+    await navigator.clipboard.writeText(code);
+    $("#room-status").textContent = "房間代碼已複製。";
+  } catch {
+    $("#room-status").textContent = "請手動選取房間代碼。";
+  }
+});
 document.addEventListener("keydown", handleKeydown);
 setSetupEnabled(true, false);
+const initialOnlineSession = savedOnlineSession();
+if (initialOnlineSession) {
+  setMode("online");
+  connectOnline({
+    type: "join",
+    room_code: initialOnlineSession.roomCode,
+    reconnect_token: initialOnlineSession.token,
+  });
+}

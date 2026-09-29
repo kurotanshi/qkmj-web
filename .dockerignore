@@ -1,0 +1,11 @@
+.git
+.agentflow
+.acceptance
+.codex
+.claude
+target
+.tools
+node_modules
+dist
+web/pkg
+*.log

@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: qkmj
+    runtime: docker
+    region: singapore
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health

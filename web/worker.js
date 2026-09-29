@@ -1,4 +1,5 @@
 import init, { WasmGame } from "./pkg/qkmj_browser.js";
+import wasmUrl from "./pkg/qkmj_browser_bg.wasm?url";
 
 let game = null;
 let ready = false;
@@ -14,7 +15,7 @@ function sendError(error) {
 self.onmessage = async ({ data }) => {
   try {
     if (data.type === "start") {
-      await init();
+      await init({ module_or_path: wasmUrl });
       const seed = Number(data.seed);
       if (!Number.isSafeInteger(seed) || seed < 1 || seed > 4294967295) {
         throw new Error("seed 必須是 1 到 4294967295");

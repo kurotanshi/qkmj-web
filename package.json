@@ -1,0 +1,13 @@
+{
+  "name": "qkmj-browser",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/build-wasm.mjs && vite --host 0.0.0.0",
+    "build": "node scripts/build-wasm.mjs && vite build",
+    "check": "node --check web/app.js && node --check web/worker.js"
+  },
+  "devDependencies": {
+    "vite": "8.3.1"
+  }
+}

@@ -2,10 +2,13 @@ pub mod ai;
 pub mod engine;
 pub mod rules;
 
+#[cfg(feature = "server")]
+pub mod server;
+
 pub use engine::{
     Action, ActionKind, ApiSnapshot, Difficulty, Discard, EngineError, Game, GameEvent, KongKind,
     Observation, Phase, PrivateState, PublicPlayer, PublicState, RoundResult, WinningDecomposition,
-    DEFAULT_BASE, DEFAULT_MONEY, DEFAULT_TAI, HUMAN_SEAT,
+    DEFAULT_BASE, DEFAULT_MONEY, DEFAULT_TAI, HUMAN_SEAT, PLAYER_COUNT,
 };
 pub use rules::{
     is_flower, is_honor, is_suited, is_terminal, score_hand, Meld, MeldKind, ScoreInput,

@@ -39,7 +39,7 @@ pub enum KongKind {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActionKind {
     Draw,
     Discard { tile: Tile },
@@ -197,6 +197,7 @@ pub enum EngineError {
     CannotStart,
     NotResult,
     InvalidConfiguration,
+    SecureRandomUnavailable,
     InvalidJson(String),
 }
 
@@ -212,6 +213,7 @@ impl fmt::Display for EngineError {
             Self::CannotStart => "目前不能開始",
             Self::NotResult => "尚未結算",
             Self::InvalidConfiguration => "無效設定",
+            Self::SecureRandomUnavailable => "安全亂數暫時不可用",
             Self::InvalidJson(message) => message,
         };
         formatter.write_str(message)
@@ -268,6 +270,7 @@ pub struct Game {
     policy_seed: u64,
     policy_counter: u64,
     hand_locked: bool,
+    secure_hand_seed: Option<[u8; 32]>,
 }
 
 impl Game {
@@ -311,9 +314,24 @@ impl Game {
             policy_seed: mix(seed ^ 0x6a09e667f3bcc909),
             policy_counter: 0,
             hand_locked: false,
+            secure_hand_seed: None,
         };
         game.begin_hand();
         game
+    }
+
+    #[cfg(feature = "server")]
+    pub fn new_secure() -> Result<Self, EngineError> {
+        use rand::RngCore;
+
+        let mut seed = [0; 32];
+        rand::rngs::OsRng
+            .try_fill_bytes(&mut seed)
+            .map_err(|_| EngineError::SecureRandomUnavailable)?;
+        let mut game = Self::new(u64::from_le_bytes(seed[..8].try_into().unwrap()));
+        game.secure_hand_seed = Some(seed);
+        game.begin_hand();
+        Ok(game)
     }
 
     pub fn seed(&self) -> u64 {
@@ -352,6 +370,12 @@ impl Game {
         Ok(())
     }
 
+    pub fn set_player_name(&mut self, seat: u8, name: String) -> Result<(), EngineError> {
+        let seat = self.player_index(seat)?;
+        self.players[seat].name = name;
+        Ok(())
+    }
+
     pub fn start(&mut self) -> Result<(), EngineError> {
         if matches!(self.phase, Phase::Result) {
             return Err(EngineError::CannotStart);
@@ -364,6 +388,16 @@ impl Game {
     pub fn next_hand(&mut self) -> Result<(), EngineError> {
         if !matches!(self.phase, Phase::Result) {
             return Err(EngineError::NotResult);
+        }
+        #[cfg(feature = "server")]
+        if self.secure_hand_seed.is_some() {
+            use rand::RngCore;
+
+            let mut seed = [0; 32];
+            rand::rngs::OsRng
+                .try_fill_bytes(&mut seed)
+                .map_err(|_| EngineError::SecureRandomUnavailable)?;
+            self.secure_hand_seed = Some(seed);
         }
         self.hand_number = self.hand_number.saturating_add(1);
         self.revision = self.revision.saturating_add(1);
@@ -542,6 +576,30 @@ impl Game {
         })
     }
 
+    pub fn bot_step_for(&mut self, seat: u8) -> Result<Vec<GameEvent>, EngineError> {
+        self.player_index(seat)?;
+        let legal = self.legal_action_kinds(seat);
+        if legal.is_empty() {
+            return Err(EngineError::InvalidPhase);
+        }
+        let observation = self.observation(seat);
+        let difficulty = self.players[seat as usize]
+            .difficulty
+            .unwrap_or(Difficulty::Medium);
+        let seed = self
+            .policy_seed
+            .wrapping_add(self.policy_counter)
+            .wrapping_add(self.revision)
+            .wrapping_add(seat as u64);
+        self.policy_counter = self.policy_counter.wrapping_add(1);
+        let kind = ai::choose_action(&observation, &legal, difficulty, seed);
+        self.apply(Action {
+            revision: self.revision,
+            actor: seat,
+            kind,
+        })
+    }
+
     pub fn observation(&self, seat: u8) -> Observation {
         let index = self.player_index(seat).unwrap_or(0);
         Observation {
@@ -599,15 +657,19 @@ impl Game {
             seat,
             hand: self.players[seat_index].hand.clone(),
             legal_actions: self.legal_actions(seat),
-            needs_human: seat == HUMAN_SEAT && self.human_needs_action(),
+            needs_human: self.seat_needs_action(seat),
         })
     }
 
     pub fn snapshot(&self) -> ApiSnapshot {
-        ApiSnapshot {
+        self.snapshot_for(HUMAN_SEAT).expect("human seat is fixed")
+    }
+
+    pub fn snapshot_for(&self, seat: u8) -> Result<ApiSnapshot, EngineError> {
+        Ok(ApiSnapshot {
             public: self.public_state(),
-            private: self.private_state(HUMAN_SEAT).expect("human seat is fixed"),
-        }
+            private: self.private_state(seat)?,
+        })
     }
 
     pub fn tile_conservation(&self) -> bool {
@@ -710,6 +772,7 @@ impl Game {
             policy_seed: 7,
             policy_counter: 0,
             hand_locked: true,
+            secure_hand_seed: None,
         };
         if let Phase::Claim { discarder, tile } = &phase {
             game.players[*discarder as usize].discards.push(Discard {
@@ -767,12 +830,18 @@ impl Game {
             player.door_wind = (seat + 1) as u8;
         }
         self.wall = full_deck();
-        shuffle(
-            &mut self.wall,
-            mix(self.seed ^ self.hand_number as u64 ^ 0x243f6a8885a308d3),
-        );
-        let mut door_rng = mix(self.seed ^ self.hand_number as u64 ^ 0x13198a2e03707344);
-        let door_start = (next_u64(&mut door_rng) % PLAYER_COUNT as u64) as usize;
+        let door_start = {
+            #[cfg(feature = "server")]
+            if let Some(seed) = self.secure_hand_seed {
+                secure_shuffle(&mut self.wall, seed)
+            } else {
+                deterministic_shuffle(&mut self.wall, self.seed, self.hand_number)
+            }
+            #[cfg(not(feature = "server"))]
+            {
+                deterministic_shuffle(&mut self.wall, self.seed, self.hand_number)
+            }
+        };
         for offset in 0..PLAYER_COUNT {
             let seat = (door_start + offset) % PLAYER_COUNT;
             self.players[seat].door_wind = offset as u8 + 1;
@@ -1347,12 +1416,21 @@ impl Game {
     }
 
     fn human_needs_action(&self) -> bool {
+        self.seat_needs_action(HUMAN_SEAT)
+    }
+
+    fn seat_needs_action(&self, seat: u8) -> bool {
+        if seat >= PLAYER_COUNT as u8 {
+            return false;
+        }
         match self.phase {
-            Phase::NeedDraw { seat } | Phase::NeedDiscard { seat } => seat == HUMAN_SEAT,
+            Phase::NeedDraw { seat: current } | Phase::NeedDiscard { seat: current } => {
+                current == seat
+            }
             Phase::Claim { .. } => {
-                self.responses[0].is_none()
+                self.responses[seat as usize].is_none()
                     && self
-                        .legal_action_kinds(0)
+                        .legal_action_kinds(seat)
                         .iter()
                         .any(|kind| !kind.is_pass())
             }
@@ -1437,6 +1515,23 @@ fn shuffle(values: &mut [Tile], mut state: u64) {
         let swap = (next_u64(&mut state) % (index as u64 + 1)) as usize;
         values.swap(index, swap);
     }
+}
+
+fn deterministic_shuffle(values: &mut [Tile], seed: u64, hand_number: u32) -> usize {
+    shuffle(values, mix(seed ^ hand_number as u64 ^ 0x243f6a8885a308d3));
+    let mut door_rng = mix(seed ^ hand_number as u64 ^ 0x13198a2e03707344);
+    (next_u64(&mut door_rng) % PLAYER_COUNT as u64) as usize
+}
+
+#[cfg(feature = "server")]
+fn secure_shuffle(values: &mut [Tile], seed: [u8; 32]) -> usize {
+    use rand::{Rng, SeedableRng};
+
+    let mut rng = rand::rngs::StdRng::from_seed(seed);
+    for index in (1..values.len()).rev() {
+        values.swap(index, rng.gen_range(0..=index));
+    }
+    rng.gen_range(0..PLAYER_COUNT)
 }
 
 fn settlement(

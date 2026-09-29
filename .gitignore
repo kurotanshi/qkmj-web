@@ -10,3 +10,5 @@ qkmjserver/mjrec
 /.tools/
 /web/pkg/
 /.acceptance/
+/node_modules/
+/dist/

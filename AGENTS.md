@@ -4,7 +4,9 @@
 
 - `src/`: Rust 2021 crate; `engine.rs` manages game state, `rules.rs` handles scoring, `ai.rs` implements bots, and `lib.rs` exposes WebAssembly bindings.
 - `tests/`: native integration and regression tests.
-- `web/`: static HTML, CSS, and JavaScript assets. `app.js` renders the UI; `worker.js` owns the Wasm game and bot steps.
+- `web/`: Vite-rooted HTML, CSS, JavaScript, and the offline Worker. `app.js` renders the UI; `worker.js` owns the Wasm game and bot steps.
+- `src/server.rs` and `src/bin/qkmj-server.rs`: optional native HTTP/WebSocket service and room lifecycle.
+- `scripts/build-wasm.mjs`, `vite.config.js`, `Dockerfile`, and `render.yaml`: pinned browser build and deployment packaging.
 - `web/pkg/`: generated bindings and Wasm; ignored by Git.
 - `README.md`: detailed game rules, toolchain setup, and verification instructions.
 
@@ -21,16 +23,19 @@ export RUSTDOC="$(rustup which --toolchain 1.98.1 rustdoc)"
 - Run native tests: `rustup run 1.98.1 cargo test --offline`.
 - Check formatting: `rustup run 1.98.1 cargo fmt -- --check`.
 - Check JavaScript syntax: `node --check web/app.js` and `node --check web/worker.js`.
+- Run the real Node 24 WebSocket regression after building the release server: `node --test tests/ws-regression.mjs`.
 
 Build and generate browser assets:
 
 ```sh
 rustup run 1.98.1 cargo build --release --target wasm32-unknown-unknown
 ./.tools/bin/wasm-bindgen --target web --out-dir web/pkg target/wasm32-unknown-unknown/release/qkmj_browser.wasm
-python3 -m http.server --directory web 8080
+npm run build
+rustup run 1.98.1 cargo build --release --features server --bin qkmj-server
+PORT=3000 ./target/release/qkmj-server
 ```
 
-Open `http://127.0.0.1:8080/`. Run the README's Clippy command with warnings denied before submitting Rust changes.
+Use `npm run dev` for Vite development with `/ws` proxied to the native server, or open the production service at `http://127.0.0.1:3000/`. Render Free may sleep, cold-start, and restart the single in-memory service; rooms and reconnect credentials are lost on restart. Configure a custom domain manually in Render and at the DNS provider. Run the README's Clippy command with warnings denied before submitting Rust changes.
 
 ## Coding Style & Naming Conventions
 
