@@ -9,3 +9,4 @@ qkmjserver/mjrec
 /browser/target/
 /browser/.tools/
 /browser/web/pkg/
+/.acceptance/
