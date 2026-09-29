@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node scripts/build-wasm.mjs && vite --host 0.0.0.0",
+    "dev": "node scripts/dev.mjs",
     "build": "node scripts/build-wasm.mjs && vite build",
-    "check": "node --check web/app.js && node --check web/worker.js"
+    "check": "node --check web/app.js && node --check web/worker.js && node --check scripts/dev.mjs"
   },
   "devDependencies": {
     "vite": "8.3.1"

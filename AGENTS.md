@@ -24,6 +24,7 @@ export RUSTDOC="$(rustup which --toolchain 1.98.1 rustdoc)"
 - Check formatting: `rustup run 1.98.1 cargo fmt -- --check`.
 - Check JavaScript syntax: `node --check web/app.js` and `node --check web/worker.js`.
 - Run the real Node 24 WebSocket regression after building the release server: `node --test tests/ws-regression.mjs`.
+- Check development process startup/failure/shutdown: `node --test tests/dev-runner.mjs` (POSIX fixtures).
 
 Build and generate browser assets:
 
@@ -35,7 +36,7 @@ rustup run 1.98.1 cargo build --release --features server --bin qkmj-server
 PORT=3000 ./target/release/qkmj-server
 ```
 
-Use `npm run dev` for Vite development with `/ws` proxied to the native server, or open the production service at `http://127.0.0.1:3000/`. Render Free may sleep, cold-start, and restart the single in-memory service; rooms and reconnect credentials are lost on restart. Configure a custom domain manually in Render and at the DNS provider. Run the README's Clippy command with warnings denied before submitting Rust changes.
+Use `npm run dev` to build Wasm/native code and start both Vite and the Rust server (port 3000); Ctrl+C stops both. Vite proxies `/ws` to Rust. For a production build, open the native service at `http://127.0.0.1:3000/`. Render Free may sleep, cold-start, and restart the single in-memory service; rooms and reconnect credentials are lost on restart. Configure a custom domain manually in Render and at the DNS provider. Run the README's Clippy command with warnings denied before submitting Rust changes.
 
 ## Coding Style & Naming Conventions
 

@@ -5,37 +5,102 @@
 - 單機瀏覽器遊玩：1 位真人與 3 位 AI，各自可選弱／中／強。
 - 線上四人房間：伺服器主持牌局、斷線由中 AI 接手，重連憑證保留座位。
 - 字體隨視窗縮放，支援滑鼠、鍵盤與觸控操作。
-- Rust 遊戲引擎在 Web Worker 執行；前端使用原生 HTML、CSS 與 JavaScript。
+- 單機引擎在 Web Worker 執行；線上牌局由 Rust 伺服器管理。前端使用原生 HTML、CSS 與 JavaScript。
 
 ## 快速開始
 
-以下指令皆從儲存庫根目錄執行。不要直接用 `file://` 開啟。
+**執行 `npm run dev` 就會同時啟動 Vite 前端與 Rust 房間伺服器。** 單機與線上房間都使用同一個指令，只需保留一個終端機。
 
-依照 [建置與驗證說明](#contributing-and-verification) 安裝固定版本的 Rust、wasm-bindgen 與 Node 24，然後：
+| 使用方式 | 需要保持運作的服務 | 瀏覽器網址 |
+| --- | --- | --- |
+| 本機單機／線上房間 | `npm run dev` 管理前後端 | <http://127.0.0.1:5173/> |
+| 正式版本的本機測試 | 建置完成後，只啟動 Rust 服務 | <http://127.0.0.1:3000/> |
+
+以下指令皆從專案根目錄執行，也就是包含 `Cargo.toml` 與 `package.json` 的目錄。開發流程不需要 Python；不要使用舊的 `http://127.0.0.1:8080/` 或直接以 `file://` 開啟網頁。
+
+### 1. 第一次使用：準備工具
+
+需要 Node.js 24／npm、Rust `1.98.1`、Wasm target 與 wasm-bindgen CLI `0.2.128`。Rust 和 Wasm 工具的安裝指令見[建置與驗證說明](#contributing-and-verification)。
+
+安裝前端依賴：
 
 ```sh
 npm ci
+```
+
+### 2. 一個指令啟動前後端
+
+```sh
 npm run dev
 ```
 
-開啟 <http://127.0.0.1:5173/>。`npm run dev` 會只建置一次 Wasm，再交給 Vite；啟動線上房間時另開終端機執行 `cargo run --release --features server --bin qkmj-server`，Vite 會代理 `/ws`。
+指令會依序建置 Wasm、建置 Rust 後端，再同時啟動兩個服務。第一次編譯可能需要一些時間。看到 Vite 顯示 `Local: http://localhost:5173/` 後，瀏覽器開啟 <http://127.0.0.1:5173/>，即可選擇「單機」或「線上房間」。
 
-Production build and native service:
+保持這個終端機運作即可，**不需要另外啟動 Rust 服務**。Vite 會把 `/ws` 連線轉送至 Rust 的 `127.0.0.1:3000`；開發指令固定使用後端 3000 埠。若 Vite 的 5173 已被占用，以終端機實際顯示的 Local 網址為準。
+
+按一次 `Ctrl+C` 會同時關閉前後端。若任一服務退出，啟動腳本也會關閉另一個，避免留下半套服務。停止或重啟 Rust 服務會清除目前所有房間。
+
+修改前端 HTML、CSS、JavaScript 時由 Vite 更新；修改 Rust 原始碼後，請按 `Ctrl+C` 再執行 `npm run dev`，重新建置 Wasm 與後端。目前沒有設定 Rust 自動重新編譯。
+
+若要確認後端是否正常，可用瀏覽器開啟 <http://127.0.0.1:3000/health>，或在另一個終端機執行：
+
+```sh
+curl http://127.0.0.1:3000/health
+```
+
+回傳 `ok` 代表後端已啟動。開發時仍從 Vite 的網頁建立房間。
+
+### 3. 建立房間並開始遊戲
+
+1. 開啟 Vite 網址，切換到「線上房間」，輸入名稱並按「建立」。
+2. 將畫面上的房間代碼交給其他三位玩家；其他玩家在相同網站輸入名稱與代碼後按「加入」。
+3. 四人都連線並按「準備」後，才會開始第一局。一個人建立房間後停在等待畫面是正常的。
+4. 若要在同一台電腦測試，手動開啟四個新分頁，各自輸入網址。不要直接複製已入房的分頁，以免複製到同一座位的重連資料。
+
+同一區域網路的朋友可使用 Vite 終端機顯示的 Network 網址，例如 `http://192.168.1.10:5173/`；請使用你電腦實際的 IP，並確認防火牆允許連線。朋友電腦上的 `localhost` 指向朋友自己的電腦，不能用來連到你的服務。不同網路的朋友請使用部署後的網站網址。
+
+遊戲中斷線後，AI 會接手該局；在原分頁重連或重新整理，會先觀戰，下一局開始才恢復操作。重連資料保存在分頁的 `sessionStorage`，因此不要把關閉分頁後重新開啟視為可靠的重連方式。開局前按「離開房間」會釋放座位，讓其他人補位。
+
+### 本機連線問題排查
+
+| 狀況 | 檢查方式 |
+| --- | --- |
+| 建立新房間卻顯示「房間已結束，請重新加入」 | 這是舊版提示。更新後重新執行 `npm run dev`，並從 Vite 顯示的網址重新整理網頁。 |
+| 顯示「無法連上房間伺服器」 | 確認 `npm run dev` 已完成建置且仍在運作，並檢查 `/health` 是否回傳 `ok`。若啟動失敗，查看同一個終端機的錯誤訊息。 |
+| 顯示「找不到房間，可能已過期」 | 後端可能已重啟，或房間在所有人離線五分鐘後過期；需要重新建立房間。 |
+| 房間已建立，但牌局沒有開始 | 第一局需要四位玩家都連線並按「準備」。 |
+| 後端顯示埠已被占用 | 先停止之前手動啟動的 Rust 後端，再執行 `npm run dev`。開發腳本固定使用 3000 埠，失敗時會關閉這次啟動的服務。 |
+
+## 正式版本的本機測試
+
+完成上述工具安裝與 `npm ci` 後，在專案根目錄執行：
 
 ```sh
 npm run build
-PORT=3000 cargo run --release --features server --bin qkmj-server
+export RUSTC="$(rustup which --toolchain 1.98.1 rustc)"
+export RUSTDOC="$(rustup which --toolchain 1.98.1 rustdoc)"
+PORT=3000 rustup run 1.98.1 cargo run --release --features server --bin qkmj-server
 ```
 
-服務會提供 `dist/`、`/ws` 與 `/health`，預設綁定 `0.0.0.0:3000`。房間與重連憑證只在記憶體中存在，服務重啟後所有房間消失；沒有公開觀眾、登入、資料庫或多實例協調。
+若開發用的後端仍在執行，請先在原終端機按 `Ctrl+C`，再執行最後一行，以免占用相同的 3000 埠。
 
-After the release server is built, run the real Node 24 socket regression with:
+開啟 <http://127.0.0.1:3000/>。這個模式不需要 Vite 常駐：Rust 服務同時提供 `dist/` 網頁、`/ws` 與 `/health`，預設綁定 `0.0.0.0:3000`。修改網頁後要重新執行 `npm run build` 才會更新正式資源。
+
+房間與重連資料只保存在伺服器記憶體中，服務重啟後所有房間都會消失；目前沒有登入、資料庫或多實例協調。
+
+完成 release 後端建置後，可另外執行 WebSocket 回歸測試：
 
 ```sh
 node --test tests/ws-regression.mjs
 ```
 
-The test chooses an available local port, observes child startup/exit, and covers four connected clients, AI takeover, reconnect watching, Result readiness, stale retries, malformed/unknown/oversize input, and idle unauthenticated admission.
+測試會自行選擇可用埠並啟動測試伺服器，涵蓋四人連線、AI 接手、重連觀戰、下一局準備、過期動作重試與輸入驗證。
+
+開發啟動腳本另有程序管理回歸測試，可在 macOS／Linux 執行；使用替代建置與服務程序，檢查中斷、建置失敗及任一服務退出時的清理，不占用遊戲服務的埠：
+
+```sh
+node --test tests/dev-runner.mjs
+```
 
 ## 專案結構
 
@@ -44,6 +109,7 @@ The test chooses an available local port, observes child startup/exit, and cover
 - `tests/`：引擎與回歸測試。
 - `web/`：終端機風格介面及 Worker。
 - `src/server.rs`、`src/bin/qkmj-server.rs`：feature-gated 原生房間、WebSocket 與靜態服務。
+- `scripts/dev.mjs`：建置並管理本機前後端，同步處理關閉與失敗退出。
 - `scripts/build-wasm.mjs`、`vite.config.js`：固定工具鏈的 Wasm 產出與 Vite bundle。
 - `Dockerfile`、`render.yaml`：非 root 的單一 Render Free 服務部署設定。
 - `web/pkg/`、`target/`、`.tools/`：產生的網頁套件、Rust 建置產物與本機工具，不納入版本控制。
@@ -121,6 +187,7 @@ the default crate remains the offline library and Wasm target.
 
 Verified toolchain and binding pins:
 
+- Node.js `24` and npm
 - Rust `1.98.1` via rustup
 - `wasm-bindgen` crate and CLI `0.2.128`
 - Wasm target `wasm32-unknown-unknown`

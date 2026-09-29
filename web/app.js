@@ -953,7 +953,7 @@ function connectOnline(command) {
     const saved = savedOnlineSession();
     if (!saved || reconnectAttempts >= 6) {
       if (saved || !onlineTerminalError) {
-        showOnlineError(saved ? "重連次數已達上限，請重新加入房間" : "房間已結束，請重新加入");
+        showOnlineError(saved ? "重連次數已達上限，請重新加入房間" : "無法連上房間伺服器，請確認伺服器已啟動後再試");
       }
       if (state?.public) render();
       renderLobby();
