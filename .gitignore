@@ -6,7 +6,7 @@ qkmjserver/mjrec
 .claude/
 .codex/
 .worktrees/
-/browser/target/
-/browser/.tools/
-/browser/web/pkg/
+/target/
+/.tools/
+/web/pkg/
 /.acceptance/
