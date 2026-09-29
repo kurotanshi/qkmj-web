@@ -25,7 +25,5 @@ python3 -m http.server --directory browser/web 8080
 
 ## 來源與致謝
 
-本版本自 [kurotanshi/qkmj](https://github.com/kurotanshi/qkmj) 的
-[`e3605a4`](https://github.com/kurotanshi/qkmj/commit/e3605a4b4394e0a5e2083d8de252eaf5cb4cee24) 獨立而來，保留相同的瀏覽器程式碼與測試。
 原版 QKMJ 由 sysu（吳先祐／Shian-Yow Wu）開發，TonyQ 維護 0.94 beta 分支，gjchen 提供 WebSocket 與 Docker 版本。
 原版終端機 client／server 與歷史紀錄保留於來源儲存庫。
