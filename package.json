@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "node scripts/build-wasm.mjs && vite build",
-    "check": "node --check web/app.js && node --check web/worker.js && node --check scripts/dev.mjs"
+    "check": "node --check web/app.js && node --check web/worker.js && node --check scripts/dev.mjs && node --check scripts/publish-public.mjs",
+    "test:publish": "node --test tests/publish-public.mjs"
   },
   "devDependencies": {
     "vite": "8.3.1"
