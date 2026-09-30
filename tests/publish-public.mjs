@@ -62,6 +62,16 @@ function seedPublic(name = "public") {
   return { remote, work, sha };
 }
 
+test("publisher gives a clear error for tracked private worktree changes", async () => {
+  const privateRepo = seedPrivate("dirty-private");
+  writeFileSync(join(privateRepo.checkout, "src.txt"), "uncommitted\n");
+
+  await assert.rejects(
+    publish({ repoRoot: privateRepo.checkout, privateUrl: privateRepo.remote, publicUrl: "unused" }),
+    /Tracked worktree changes must be committed before publishing\./,
+  );
+});
+
 test("publisher waits for public changes to reach private, then publishes a filtered child snapshot", async () => {
   const privateRepo = seedPrivate();
   const publicRepo = seedPublic();

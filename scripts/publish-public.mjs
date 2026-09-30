@@ -35,7 +35,12 @@ function currentRepo(repoRoot, privateUrl) {
   assert(realpathSync(top) === realpathSync(repoRoot), `Run this command from the repository root: ${top}`);
   assert(git(repoRoot, ["branch", "--show-current"]) === "main", "Private canonical branch must be main.");
   assert(git(repoRoot, ["remote", "get-url", "origin"]) === privateUrl, `origin must point to private canonical: ${privateUrl}`);
-  assert(git(repoRoot, ["diff", "--quiet", "HEAD", "--"]) === "", "Tracked worktree changes must be committed before publishing.");
+  try {
+    git(repoRoot, ["diff", "--quiet", "HEAD", "--"]);
+  } catch (error) {
+    if (error.status !== 1) throw error;
+    throw new Error("Tracked worktree changes must be committed before publishing.");
+  }
   const head = git(repoRoot, ["rev-parse", "HEAD"]);
   const privateHead = git(repoRoot, ["ls-remote", privateUrl, "refs/heads/main"]).split(/\s+/)[0];
   assert(head && head === privateHead, "Private main must be pushed before public publication.");
